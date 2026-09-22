@@ -22,10 +22,16 @@ def _find(name):
     p = shutil.which(name)
     if p:
         return p
-    for dp, dn, fn in os.walk(r"C:\Users\1\AppData\Local\hermes"):
-        for f in fn:
-            if f.lower() in (name, name + '.exe'):
-                return os.path.join(dp, f)
+    # 兜底：在 Hermes 目录下找（PATH/环境变量没带 ffmpeg 时）。$HERMES_HOME 优先，
+    # 否则用本机 hermes home，最后退回当前目录 —— 不写死任何人的用户名。
+    for base in [os.environ.get('HERMES_HOME'),
+                 os.path.join(os.environ.get('LOCALAPPDATA', ''), 'hermes'),
+                 os.environ.get('LOCALAPPDATA', '')]:
+        if base and os.path.isdir(base):
+            for dp, dn, fn in os.walk(base):
+                for f in fn:
+                    if f.lower() in (name, name + '.exe'):
+                        return os.path.join(dp, f)
     return None
 
 FF = _find('ffmpeg')
