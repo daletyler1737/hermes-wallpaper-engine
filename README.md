@@ -27,7 +27,7 @@ A single-file desktop wallpaper plugin for **Hermes Desktop** — no build step,
 ### 库面板 / Library grid
 
 * 缩略图网格（`auto-fill` 60px 列 / 40px 高缩略图，一屏看很多张）
-* 缩略图：图片 = 真图；**视频 = 第 1 秒的真帧**（`#t=1` 媒体片段，零依赖）；网页 = 🌐 图标
+* 缩略图：图片 = 真图；**视频 = 壁纸目录自带的静态封面**（`preview.jpg` → `preview.gif` 逐级回退，纯 `<img>`，不给卡片建 `<video>`，零解码器开销）；网页 = 🌐 图标
 * 文件名搜索 + 类型过滤（全部 / 图片 / 视频）+ 点卡片即应用
 * 软隐藏单张（不删源文件）·「恢复全部」找回 ·「重新扫描」刷新
 
@@ -85,6 +85,7 @@ Folder scans happen once: the result is cached in memory and on disk (6h TTL). S
 * 壁纸文件夹上限 5 个（面板里校验）。
 * 视频壁纸默认静音（Chromium 自动播放策略），面板里可开声音；开启后需要先点一下界面才会出声。
 * 4K 视频壁纸会持续吃 GPU，笔记本注意。
+* 视频卡片只显示静态封面，**开面板不会为每张视频壁纸起解码器**（v48 起，缩略图不再用 `<video>` 取帧）。
 * HEVC/H.265 视频在 Chromium 里不解码 → 黑屏，请转成 H.264。
 
 ---
@@ -111,5 +112,5 @@ Folder scans happen once: the result is cached in memory and on disk (6h TTL). S
 ## 来源与许可 / Credits & License
 
 * 基于 [KonjacW/hermes-wallpaper-plugin](https://github.com/KonjacW/hermes-wallpaper-plugin) 的 v3 版本继续开发；**上游仓库未声明许可证**（`license: null`），因此本仓库的 MIT 许可**只覆盖本仓库的改动部分**，上游原始代码的权利仍归其作者。若你是上游作者并希望调整署名或许可方式，开 issue 即可。
-* 本仓库相对上游的主要改动：视频壁纸（`<video>` 图层与声音开关）、网页壁纸（`<iframe>` 图层）、Wallpaper Engine 创意工坊库自动探测/多库挂载/下钻/封面剔除、壁纸库缩略图网格（搜索/过滤/软隐藏）、视频卡片真帧缩略图、卡片缩小、多文件夹轮换、**扫描结果常驻缓存（内存 + 落盘，6 小时 TTL）** 与大量 UI/主题对齐。
+* 本仓库相对上游的主要改动：视频壁纸（`<video>` 图层与声音开关）、网页壁纸（`<iframe>` 图层）、Wallpaper Engine 创意工坊库自动探测/多库挂载/下钻/封面剔除、壁纸库缩略图网格（搜索/过滤/软隐藏）、视频卡片静态封面缩略图（不建 `<video>`，省内存）、卡片缩小、多文件夹轮换、**扫描结果常驻缓存（内存 + 落盘，6 小时 TTL）** 与大量 UI/主题对齐。
 * 本仓库自己的改动以 MIT 发布 —— 见 [LICENSE](LICENSE)。
