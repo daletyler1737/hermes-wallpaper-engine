@@ -42,6 +42,9 @@ A single-file desktop wallpaper plugin for **Hermes Desktop** — no build step,
 
 最多 5 个壁纸文件夹（逐个可启用）· 单个文件夹直接指定一张图 · 顺序/随机 ·「更换间隔」定时切换 · 失败自动回退（连续失败 5 次停止该张，界面恢复原主题）。
 
+**播放后换 / Play-N-loops-then-switch**：动态壁纸（视频类）可以设「播满 1 / 2 / 3 / 5 遍后自动换下一张」——按**视频自身时长 × 遍数 ÷ 倍速**计时，所以每张都完整播完，不会切在半路；与「定时轮换」各自独立，开一个就够。图片 / 网页 / 场景壁纸拿不到时长，仍按「更换间隔」走。
+Video wallpapers can be set to switch after **1 / 2 / 3 / 5 full plays** — the timer is `duration × loops ÷ playbackRate`, so nothing is cut mid-play. Independent from the minutes-based rotation (either one enables auto-switching); images/web/scene wallpapers fall back to the minute interval since they have no duration.
+
 **扫描结果常驻 / Scan results persist**：文件夹扫描只做一次 —— 结果留在内存并落盘（TTL 6 小时）。换壁纸、定时轮换、重开面板都复用同一份列表，不再每次重扫硬盘（上百张壁纸 + 创意工坊深扫一次不便宜）。改过文件夹、或点「重新扫描」，立即真扫并刷新缓存。
 Folder scans happen once: the result is cached in memory and on disk (6h TTL). Switching wallpapers, timed rotation and reopening the panel all reuse the same list instead of re-walking the folders. Editing folders or pressing Rescan forces a fresh scan.
 

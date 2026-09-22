@@ -39,6 +39,7 @@ const DEFAULTS = {
   folders: [],       // v36：壁纸文件夹列表（最多 5 个，每项 {path, enabled}；空 = 无文件夹图源）
   rotate: false,     // 定时轮换开关
   intervalMin: 15,   // 更换间隔（分钟）
+  playLoops: 0,      // v55：动态壁纸播放 N 遍后自动换下一张（0=关闭；1/2/3/5…）
   order: 'random',   // 'random' | 'shuffle' | 'seq'
   animStyle: 'fade-zoom', // 'none' | 'fade' | 'fade-zoom' | 'blur'
   animMs: 900,       // 切换动画时长（毫秒）
@@ -265,6 +266,11 @@ function makeLayerEl(slot, isVideo, isWeb) {
     el.autoplay = true
     el.loop = true
     el.playsInline = true
+    // v55：播放模式 —— 建层时 duration 还是 NaN，元数据到手后按真实时长重排下一次换图
+    el.addEventListener('loadedmetadata', () => {
+      const c = $cfg ? $cfg.get() : null
+      if (c && Number(c.playLoops) > 0 && wpAutoRotateAllowed(c)) scheduleNext()
+    })
     // v40：新建层按当前倍速播（与面板即时生效路径同源）
     try { el.playbackRate = Math.max(0.5, Math.min(2, Number(wpCfgCache && wpCfgCache.videoSpeed) || 1)) } catch (e) {}
     // v39：已开声音 + 本会话已有过用户手势 → 直接带声播；否则先静音，等手势解锁
@@ -1973,7 +1979,8 @@ function wpForceEndPick(st) {
 function wpAutoRotateAllowed(cfg) {
   if (!cfg) return false
   if (cfg.locked) return false   // 锁定优先：即使 rotate 仍勾选也不放行
-  return !!cfg.rotate
+  // v55：播放 N 遍后换 = 第二种自动轮换开关，不必再勾「定时轮换」
+  return !!cfg.rotate || Number(cfg.playLoops) > 0
 }
 
 // v33 锁定：勾选锁定时「钉住的图」= 此刻屏幕上这张。必须每次勾选都重钉 ——
@@ -2059,7 +2066,7 @@ function wpRepointConfig(cfg, oldPath, newPath) {
 // 图源的唯一出处 = wpActiveFolders(cfg)：任何「有没有图源 / 扫哪些目录」的判断都必须走它，
 // 不许再读旧单文件夹字段（v≤35 的 folderPath，迁移后删除，wiring 门禁会数残留）。
 const WP_MAX_FOLDERS = 5
-const WP_BUILD = 'v53-thumbs-late'
+const WP_BUILD = 'v55-playloops'
 
 // v48：卡片缩略图一律静态（不建 <video>）；v47 扫描结果常驻（内存+落盘）；v45 多 Steam 库全挂；场景壁纸渲染图走 we-scene 产物
 
@@ -2936,6 +2943,20 @@ function urlToPath(url) {
   return url
 }
 
+// v55：下一次换图延时 —— 播放模式按「当前视频时长 × 遍数 ÷ 倍速」，否则按分钟间隔。
+// ponytail: 图片/网页/场景拿不到时长 → 退回分钟间隔（面板提示已写明）。
+function wpNextDelayMs(cfg) {
+  const loops = Math.max(0, Math.min(50, Number(cfg.playLoops) || 0))
+  const el = typeof currentLayerEl === 'function' ? currentLayerEl() : null
+  const vid = el && el.tagName === 'VIDEO'
+  const dur = vid && isFinite(el.duration) && el.duration > 0 ? el.duration : 0
+  if (loops > 0 && dur > 0) {
+    const rate = Math.max(0.5, Math.min(2, Number(el.playbackRate) || 1))
+    return Math.max(5000, Math.min(240 * 60000, dur * loops * 1000 / rate))
+  }
+  return Math.max(1, Math.min(240, Number(cfg.intervalMin) || 1)) * 60000
+}
+
 // v28：配置一律现读 $cfg —— 旧实现把 cfg 闭包进 timer，改设置后旧值会一直生效
 function scheduleNext() {
   const state = getRotatorState()
@@ -2949,12 +2970,11 @@ function scheduleNext() {
     return
   }
   if (state.timer) clearTimeout(state.timer)
-  const mins = Math.max(1, Math.min(240, Number(cfg.intervalMin) || 1))
   const generation = state.generation
   state.timer = setTimeout(() => {
     const current = getRotatorState()
     if (current.owner === ROTATOR_OWNER && current.generation === generation) rotateOnce($cfg.get())
-  }, mins * 60000)
+  }, wpNextDelayMs(cfg))
 }
 
 function stopRotator() {
@@ -3535,7 +3555,7 @@ function WallpaperSettings() {
   //      拖一次滑条触发 ~26 次「清空 → 等 → 重建」→ 闪黑 + 主线程打满。
   const VISUAL_KEYS = ['blur', 'brightness', 'dim', 'surfaceAlpha',
     'contrast', 'saturate', 'fit', 'videoSpeed']   // v40：新参数同样实时生效、不重建图层
-  const TIMER_KEYS = ['rotate', 'intervalMin', 'order', 'locked']   // v33：锁定只动计时器，不重建图层
+  const TIMER_KEYS = ['rotate', 'intervalMin', 'order', 'locked', 'playLoops']   // v33/v55
   const DIAG_KEYS = ['debugDump']   // v28.4：诊断开关不动图层
   const FOLDER_KEYS = ['folders']   // v36：改文件夹池不重建图层（评审 F9）
 
@@ -3558,7 +3578,7 @@ function WallpaperSettings() {
     if (keys.length > 0 && keys.every((k) => TIMER_KEYS.includes(k))) {
       // v33：锁定优先 —— 锁定态绝不 arm 定时器（并立刻清掉已有的那一次）
       // v36：图源 = 有启用的文件夹（不再是单一文件夹路径）
-      if (next.rotate && wpActiveFolders(next).length > 0 && next.enabled && !next.locked) startRotator()
+      if (wpAutoRotateAllowed(next) && wpActiveFolders(next).length > 0 && next.enabled) startRotator()
       else stopRotator()
       console.error('[wallpaper][diag] applyTimer rotate=' + !!next.rotate
         + ' interval=' + next.intervalMin + ' order=' + next.order + ' locked=' + !!next.locked)
@@ -3588,7 +3608,7 @@ function WallpaperSettings() {
           if (!wpIsLive(window, INSTANCE_ID)) return
           applyWallpaper($cfg.get())
         }, 250)
-      } else if (next.rotate && active.length > 0 && next.enabled && !next.locked) {
+      } else if (wpAutoRotateAllowed(next) && active.length > 0 && next.enabled) {
         startRotator()
       }
       // 评审 F5：锁定的图如果不在任何启用文件夹里，明确留一条日志（否则只有下一次换图才自愈）
@@ -3614,7 +3634,7 @@ function WallpaperSettings() {
 
   // v28：图源 = 有没有文件夹（手动换图不再依赖 rotate），rotate 只控制自动轮换计时器
   const hasFolder = wpActiveFolders(cfg).length > 0
-  const rotateOn = !!cfg.rotate && hasFolder && !cfg.locked   // v33：锁定 = 不轮换
+  const rotateOn = wpAutoRotateAllowed(cfg) && hasFolder   // v33 锁定 / v55 播放模式
   const lockedOn = !!cfg.locked && hasFolder                  // v33
   // v36 评审 F15：渲染与三个写操作共用同一份归一化结果 —— 「渲染归一化列表、handler 用原始下标」
   // 在原始数组含空行/重复项时会删错行
@@ -3720,7 +3740,9 @@ function WallpaperSettings() {
     idle: foldersPausedNoImage ? '⏸ 没有启用的文件夹，且当前没有画面（勾选任意一本即恢复）' : '壁纸已关闭，使用 Hermes 原始主题',
     applying: '正在加载图片…',
     applied: foldersPaused ? '⏸ 已启用的文件夹为空，轮换已暂停（仍显示当前这张）'
-      : lockedOn ? '🔒 已锁定（不轮换）' : rotateOn ? '✅ 轮换运行中' : '✅ 壁纸已应用（手动换图）',
+      : lockedOn ? '🔒 已锁定（不轮换）'
+      : rotateOn ? (Number(cfg.playLoops) > 0 ? '✅ 播放 ' + cfg.playLoops + ' 遍后自动换' : '✅ 轮换运行中')
+      : '✅ 壁纸已应用（手动换图）',
     error: '❌ 图片加载失败，已自动回退到原始主题（检查路径是否正确）'
   }[status] || ''
 
@@ -4084,6 +4106,25 @@ function WallpaperSettings() {
               jsx(OptionBtn, { active: cfg.order === 'shuffle', onClick: () => set({ order: 'shuffle' }), children: '洗牌' }),
               jsx(OptionBtn, { active: cfg.order === 'seq', onClick: () => set({ order: 'seq' }), children: '顺序' })
             ]
+          })
+        ]
+      }),
+      // v55：播放模式 —— 动态壁纸播满 N 遍后换下一张
+      jsxs('div', {
+        className: 'flex flex-col gap-1 text-xs',
+        children: [
+          jsx('span', { className: 'text-(--ui-text-secondary)', children: '播放后换壁纸' }),
+          jsxs('div', {
+            className: 'flex gap-2 flex-wrap',
+            children: [0, 1, 2, 3, 5].map((n) => jsx(OptionBtn, {
+              active: (Number(cfg.playLoops) || 0) === n,
+              onClick: () => set({ playLoops: n }),
+              children: n === 0 ? '关闭' : n + ' 遍'
+            }))
+          }),
+          jsx('div', {
+            className: 'text-[0.6875rem] text-(--ui-text-tertiary)',
+            children: '动态壁纸播满 N 遍后自动换下一张（按视频自身时长计时，与视频倍速联动）；图片/网页/场景壁纸仍按「更换间隔」。'
           })
         ]
       }),
@@ -4750,7 +4791,7 @@ libCacheIO = {
         const activeFolders = sourceState === 'active'
         const paused = cfg.enabled && sourceState === 'paused'
         const locked = cfg.enabled && !!cfg.locked && activeFolders
-        const rotationActive = status !== 'error' && cfg.enabled && cfg.rotate && activeFolders && !cfg.locked
+        const rotationActive = status !== 'error' && cfg.enabled && wpAutoRotateAllowed(cfg) && activeFolders
         return jsx('button', {
           type: 'button',
           className: cn(
@@ -4764,7 +4805,7 @@ libCacheIO = {
             : !cfg.enabled ? '壁纸(关)'
             : paused ? (status === 'applied' ? '⏸ 壁纸（暂停）' : '⏸ 壁纸(无源)')
             : locked ? '🔒 壁纸'
-            : (cfg.rotate && activeFolders ? '🔄 壁纸轮换' : '🖼 壁纸')
+            : (wpAutoRotateAllowed(cfg) && activeFolders ? (Number(cfg.playLoops) > 0 ? '▶ 播放后换' : '🔄 壁纸轮换') : '🖼 壁纸')
         })
       }
     })
