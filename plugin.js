@@ -1659,6 +1659,10 @@ let $lastSwap = null
 
 // 模块级 storage 句柄（register 时绑定）
 let ctxStorageSet = () => {}
+// v47：壁纸库常驻 —— 扫描结果落盘通道。用独立 storage 键，不写进 cfg，
+// 免得「写配置 → 触发重新应用壁纸」绕一圈自己打自己。
+const LIB_CACHE_KEY = 'wallpaper-libcache-v1'
+let libCacheIO = { get: () => null, set: () => {} }
 
 // v37：本模块实例的身份 + 各副作用的清理句柄。热重载会新建一份模块，模块级 let 会重置，
 // 所以这些句柄只服务「当前实例自己」；跨实例的事实一律走 #region instance-registry 的账本。
@@ -2041,7 +2045,7 @@ function wpRepointConfig(cfg, oldPath, newPath) {
 // 图源的唯一出处 = wpActiveFolders(cfg)：任何「有没有图源 / 扫哪些目录」的判断都必须走它，
 // 不许再读旧单文件夹字段（v≤35 的 folderPath，迁移后删除，wiring 门禁会数残留）。
 const WP_MAX_FOLDERS = 5
-const WP_BUILD = 'v46-video-thumb'   // v46：视频卡片用 #t=1 出真帧缩略图；多 Steam 库全挂；场景壁纸渲染图走 we-scene 产物
+const WP_BUILD = 'v47-persist-lib'   // v46：视频卡片用 #t=1 出真帧缩略图；多 Steam 库全挂；场景壁纸渲染图走 we-scene 产物
 
 // 文件夹比较键：normPath（大小写/斜杠方向）+ 去掉尾部分隔符。
 // 评审发现：normPath 不归尾斜杠，`D:/bg` 与 `D:/bg/` 会被当成两本 → 同一目录扫两遍、
@@ -2381,13 +2385,48 @@ async function listImagesInFolder(dirPath) {
 
 // v36：多文件夹扫描 —— 每个目录各自带 4s 超时（在 listImagesInFolder 内），并行发起，
 // 合并后跨目录去重 + 自然排序。per 供面板逐目录报张数。
-async function scanImageFolders(paths) {
+const SCAN_TTL_MS = 6 * 60 * 60 * 1000   // v47：扫描结果常驻 6 小时（过期自动重扫）
+let wpScanCache = { key: '', at: 0, val: null }   // ponytail: 进程内单槽；要每个文件夹各自 TTL 再说
+
+// 文件夹集合指纹：顺序无关、斜杠/大小写无关
+function wpScanKey(paths) {
+  return (Array.isArray(paths) ? paths.filter(Boolean) : [])
+    .map((p) => String(p).replace(/[\\/]+/g, '/').replace(/\/+$/, '').toLowerCase())
+    .sort().join('|')
+}
+
+// 常驻库读取：内存 → 落盘。key 不一致（文件夹改过）或过期（TTL）就算没有。
+function wpCachedLibrary(paths) {
+  const key = wpScanKey(paths)
+  const now = Date.now()
+  if (wpScanCache.val && wpScanCache.key === key && (now - wpScanCache.at) < SCAN_TTL_MS) {
+    return wpScanCache.val.files
+  }
+  const disk = libCacheIO.get()
+  if (!disk || !Array.isArray(disk.files) || disk.files.length === 0) return []
+  if (disk.key !== key || !(now - disk.at < SCAN_TTL_MS)) return []
+  wpScanCache = { key, at: disk.at, val: { files: disk.files, per: [] } }
+  console.error('[wallpaper][diag] lib-cache hit disk files=' + disk.files.length)
+  return disk.files
+}
+
+async function scanImageFolders(paths, force) {
   const list = Array.isArray(paths) ? paths.filter(Boolean) : []
+  const key = wpScanKey(list)
+  // v47：换图 / 轮换 / 面板共用同一份扫描结果，不再每次重扫（上百张壁纸深扫一次不便宜）。
+  // force=true 绕过缓存 —— 点「重新扫描」、刚改过文件夹时用。
+  if (!force) {
+    const files = wpCachedLibrary(list)
+    if (files.length > 0) return { files, per: (wpScanCache.val && wpScanCache.val.per) || [] }
+  }
   // 评审：per 必须与 list 同序 —— 在并发回调里 push 得到的是「完成顺序」，
   // 面板的逐目录张数会错位（哪个目录是 ⚠0 也看不出）
   const lists = await Promise.all(list.map((p) => listImagesInFolder(p)))
   const per = list.map((p, i) => ({ path: p, count: lists[i].length }))
-  return { files: wpMergeImageLists(lists), per }
+  const val = { files: wpMergeImageLists(lists), per }
+  wpScanCache = { key, at: Date.now(), val }
+  if (val.files.length > 0) libCacheIO.set({ key, at: wpScanCache.at, files: val.files })
+  return val
 }
 
 async function listImagesInFolders(paths) {
@@ -3355,7 +3394,9 @@ function WallpaperSettings() {
   const [scanInfo, setScanInfo] = useState('')
   const [scanning, setScanning] = useState(false)
   // v39 壁纸库：扫描结果留在面板里，网格浏览 + 点卡片即应用（对齐 dsh 壁纸仓库）
-  const [lib, setLib] = useState([])
+  // v47：库常驻 —— 面板一打开先拿上次的扫描结果，不再每次都要点「重新扫描」。
+  // 文件夹集合变了则自动失效（指纹不匹配 → 空库）。
+  const [lib, setLib] = useState(() => wpCachedLibrary(wpActiveFolders($cfg.get())))
   const [libQ, setLibQ] = useState('')
   const [libKind, setLibKind] = useState('all')
   const [libCur, setLibCur] = useState('')
@@ -3462,7 +3503,7 @@ function WallpaperSettings() {
     const paths = wpActiveFolders($cfg.get())
     if (paths.length === 0) { setLib([]); setScanInfo(folderCount > 0 ? '⏸ 未启用任何文件夹（轮换已暂停）' : ''); return 0 }
     setScanning(true)
-    const { files, per } = await scanImageFolders(paths)
+    const { files, per } = await scanImageFolders(paths, true)   // v47：手动触发 = 真扫，绕过常驻缓存
     setScanning(false)
     setLib(files)
     if (files.length === 0) { setScanInfo('⚠ 已启用的文件夹里没有可用图片'); return 0 }
@@ -3986,7 +4027,7 @@ function WallpaperSettings() {
 
       jsx('div', {
         className: 'text-[0.6875rem] text-(--ui-text-tertiary)',
-        children: '定时轮换：每次切换前重新扫描文件夹，新增图片自动进入轮换池。开启时先验证图片能否加载，失败自动跳过并保持当前壁纸。'
+        children: '定时轮换：从已扫描的壁纸池里切换（结果常驻 6 小时，新加的图片点「重新扫描」入池）。开启时先验证图片能否加载，失败自动跳过并保持当前壁纸。'
       })
     ]
   })
@@ -4343,6 +4384,10 @@ function registerInner(ctx) {
     }
 
     ctxStorageSet = (v) => { try { ctx.storage.set(STORE_KEY, v) } catch {} }
+libCacheIO = {
+  get: () => { try { return ctx.storage.get(LIB_CACHE_KEY, null) } catch { return null } },
+  set: (v) => { try { ctx.storage.set(LIB_CACHE_KEY, v) } catch {} },
+}
     initStore(ctx)
 
     // 定时器收尾：`scheduleNext()` 排的轮换 setTimeout 只在「用户关掉 rotate」
