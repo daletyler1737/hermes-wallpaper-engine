@@ -39,6 +39,9 @@ A single-file desktop wallpaper plugin for **Hermes Desktop** — no build step,
 
 最多 5 个壁纸文件夹（逐个可启用）· 单个文件夹直接指定一张图 · 顺序/随机 ·「更换间隔」定时切换 · 失败自动回退（连续失败 5 次停止该张，界面恢复原主题）。
 
+**扫描结果常驻 / Scan results persist**：文件夹扫描只做一次 —— 结果留在内存并落盘（TTL 6 小时）。换壁纸、定时轮换、重开面板都复用同一份列表，不再每次重扫硬盘（上百张壁纸 + 创意工坊深扫一次不便宜）。改过文件夹、或点「重新扫描」，立即真扫并刷新缓存。
+Folder scans happen once: the result is cached in memory and on disk (6h TTL). Switching wallpapers, timed rotation and reopening the panel all reuse the same list instead of re-walking the folders. Editing folders or pressing Rescan forces a fresh scan.
+
 ### 快捷键 / Keybinds
 
 | 快捷键 | 作用 |
@@ -108,5 +111,5 @@ A single-file desktop wallpaper plugin for **Hermes Desktop** — no build step,
 ## 来源与许可 / Credits & License
 
 * 基于 [KonjacW/hermes-wallpaper-plugin](https://github.com/KonjacW/hermes-wallpaper-plugin) 的 v3 版本继续开发；**上游仓库未声明许可证**（`license: null`），因此本仓库的 MIT 许可**只覆盖本仓库的改动部分**，上游原始代码的权利仍归其作者。若你是上游作者并希望调整署名或许可方式，开 issue 即可。
-* 本仓库相对上游的主要改动：视频壁纸（`<video>` 图层与声音开关）、网页壁纸（`<iframe>` 图层）、Wallpaper Engine 创意工坊库自动探测/多库挂载/下钻/封面剔除、壁纸库缩略图网格（搜索/过滤/软隐藏）、视频卡片真帧缩略图、卡片缩小、多文件夹轮换与大量 UI/主题对齐。
+* 本仓库相对上游的主要改动：视频壁纸（`<video>` 图层与声音开关）、网页壁纸（`<iframe>` 图层）、Wallpaper Engine 创意工坊库自动探测/多库挂载/下钻/封面剔除、壁纸库缩略图网格（搜索/过滤/软隐藏）、视频卡片真帧缩略图、卡片缩小、多文件夹轮换、**扫描结果常驻缓存（内存 + 落盘，6 小时 TTL）** 与大量 UI/主题对齐。
 * 本仓库自己的改动以 MIT 发布 —— 见 [LICENSE](LICENSE)。
