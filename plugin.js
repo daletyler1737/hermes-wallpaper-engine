@@ -2045,7 +2045,7 @@ function wpRepointConfig(cfg, oldPath, newPath) {
 // 图源的唯一出处 = wpActiveFolders(cfg)：任何「有没有图源 / 扫哪些目录」的判断都必须走它，
 // 不许再读旧单文件夹字段（v≤35 的 folderPath，迁移后删除，wiring 门禁会数残留）。
 const WP_MAX_FOLDERS = 5
-const WP_BUILD = 'v48-static-thumb'   // v46：视频卡片用 #t=1 出真帧缩略图；多 Steam 库全挂；场景壁纸渲染图走 we-scene 产物
+const WP_BUILD = 'v49-static-thumbs'   // v48：卡片缩略图一律静态（不建 <video>）；v47 扫描结果常驻（内存+落盘）；v45 多 Steam 库全挂；场景壁纸渲染图走 we-scene 产物
 
 // 文件夹比较键：normPath（大小写/斜杠方向）+ 去掉尾部分隔符。
 // 评审发现：normPath 不归尾斜杠，`D:/bg` 与 `D:/bg/` 会被当成两本 → 同一目录扫两遍、
@@ -2335,6 +2335,71 @@ function getRotatorState() {
 // （接线门禁的负断言按整行扫文本，参数名也算残留；图源的唯一出处是 wpActiveFolders）。
 // v48：视频卡片的缩略图要「静态、省性能」—— 不再给每张视频卡建 <video>（十几路解码器常驻）。
 // 改挂壁纸目录自带的 preview 封面（jpg 优先、其次 gif，都是 <img> 原生解码）；都没有就留 🎬 图标。
+// v49：缩略图性能 —— ①Steam 创意工坊条目用同目录 preview.jpg 当缩略图（~512px 小图），
+// 不再让卡片把 4K 原图整张解码成十几 MB 位图（一屏几十张 = 几百 MB）；
+// ②GIF/WebP/自渲 *_anim.png 等动图只取静态首帧（串行抽帧、缩到 ≤192px 存 dataURL），卡片里绝不动。
+const WP_BLANK_PX = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
+const WP_ANIM_RE = /\.(gif|webp)$/i
+const wpStillCache = new Map()
+let wpStillQueue = []
+let wpStillBusy = false
+function wpSteamCoverOf(p) {
+  const d = wpDirOf(String(p))
+  return /\/steamapps\/workshop\/content\/\d+\/[^/]+$/i.test(d) ? d + '/preview.jpg' : ''
+}
+function wpIsAnimatedThumb(p) {
+  const s = String(p)
+  return WP_ANIM_RE.test(s) || /_anim\.png$/i.test(s)
+}
+function wpStillUrl(p) { return wpStillCache.get(String(p)) || '' }
+function wpMakeStill(p) {
+  p = String(p)
+  if (wpStillCache.has(p) || wpStillQueue.indexOf(p) >= 0) return
+  wpStillQueue.push(p)
+  if (!wpStillBusy) wpStillRun()
+}
+// ponytail: 串行抽帧（一次一张）—— 并发解码几十张动图才是真卡顿来源；失败落哨兵，不重试
+function wpStillRun() {
+  const p = wpStillQueue.shift()
+  if (!p) { wpStillBusy = false; return }
+  wpStillBusy = true
+  const img = new Image()
+  img.onload = () => {
+    try {
+      const w = img.naturalWidth || 1
+      const h = img.naturalHeight || 1
+      const k = Math.min(1, 192 / Math.max(w, h))
+      const c = document.createElement('canvas')
+      c.width = Math.max(1, Math.round(w * k))
+      c.height = Math.max(1, Math.round(h * k))
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height)
+      wpStillCache.set(p, c.toDataURL('image/png'))
+      wpApplyStills()
+    } catch (e) { wpStillCache.set(p, WP_BLANK_PX) }
+    wpStillRun()
+  }
+  img.onerror = () => { wpStillCache.set(p, WP_BLANK_PX); wpStillRun() }
+  img.src = pathToFileUrl(p)
+}
+function wpApplyStills() {
+  document.querySelectorAll('img[data-wp-still]').forEach((el) => {
+    const u = wpStillUrl(el.dataset.wpStill)
+    if (u && el.src !== u) el.src = u
+  })
+}
+// 缩略图统一入口：Steam 条目取小封面；动图取静态首帧（未抽好先给 1px 透明占位，绝不闪动图）。
+function wpThumbSrc(p) {
+  const t = wpSteamCoverOf(p) || p
+  if (!wpIsAnimatedThumb(t)) return pathToFileUrl(t)
+  const u = wpStillUrl(t)
+  if (!u) { wpMakeStill(t); return WP_BLANK_PX }
+  return u
+}
+function wpThumbStillKey(p) {
+  const t = wpSteamCoverOf(p) || p
+  return wpIsAnimatedThumb(t) ? t : ''
+}
+
 const WP_PREVIEW_PICK = ['preview.jpg', 'preview.gif']
 function wpDirOf(p) {
   const s = String(p).replace(/\\/g, '/')
@@ -3790,19 +3855,38 @@ function WallpaperSettings() {
                       children: [
                         jsx('div', { style: { position: 'absolute', left: 0, top: 0, width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.875rem' }, children: '🎬' }),
                         jsx('img', {
-                          'data-wp-vthumb': p, loading: 'lazy', draggable: false,
+                          'data-wp-vthumb': p, loading: 'lazy', decoding: 'async', draggable: false,
                           style: { position: 'absolute', left: 0, top: 0, width: '100%', height: '100%', objectFit: 'cover' },
-                          src: pathToFileUrl(wpDirOf(p) + '/' + WP_PREVIEW_PICK[0]),
+                          src: wpThumbSrc(wpDirOf(p) + '/' + WP_PREVIEW_PICK[0]),
+                          'data-wp-still': wpIsAnimatedThumb(wpDirOf(p) + '/' + WP_PREVIEW_PICK[0]) ? (wpDirOf(p) + '/' + WP_PREVIEW_PICK[0]) : '',
                           onError: (e) => {
                             const el = e.currentTarget
                             const i = Number(el.dataset.wpPrevI || '0') + 1
-                            if (i < WP_PREVIEW_PICK.length) { el.dataset.wpPrevI = String(i); el.src = pathToFileUrl(wpDirOf(p) + '/' + WP_PREVIEW_PICK[i]) }
-                            else el.style.display = 'none'
+                            if (i < WP_PREVIEW_PICK.length) {
+                              el.dataset.wpPrevI = String(i)
+                              const np = wpDirOf(p) + '/' + WP_PREVIEW_PICK[i]
+                              el.dataset.wpStill = wpIsAnimatedThumb(np) ? np : ''
+                              el.src = wpThumbSrc(np)
+                            } else el.style.display = 'none'
                           }
                         })
                       ]
                     })
-                    : jsx('img', { src: pathToFileUrl(p), loading: 'lazy', draggable: false, className: 'w-full rounded object-cover', style: { height: '2.5rem' } }),
+                    // v49：缩略图用小封面 —— Steam 条目取同目录 preview.jpg（~512px）；
+                    // 4K 原图只在真正应用壁纸时才解码，避免一屏几十张把内存顶爆。
+                    : jsx('img', {
+                      loading: 'lazy', decoding: 'async', draggable: false,
+                      className: 'w-full rounded object-cover', style: { height: '2.5rem' },
+                      src: wpThumbSrc(p),
+                      'data-wp-still': wpThumbStillKey(p),
+                      onError: (e) => {
+                        const el = e.currentTarget
+                        if (el.dataset.wpFb) { el.style.display = 'none'; return }
+                        el.dataset.wpFb = '1'
+                        el.dataset.wpStill = wpIsAnimatedThumb(p) ? p : ''
+                        el.src = wpThumbSrc(p)
+                      }
+                    }),
                   jsx('span', { className: 'truncate text-(--ui-text-tertiary)', style: { fontSize: '9px' }, children: wpNameOf(p) }),
                   jsx('span', {
                     'data-wp-lib-hide': p,
