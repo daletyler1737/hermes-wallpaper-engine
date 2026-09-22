@@ -54,20 +54,24 @@ def duration(src):
 
 RX = re.compile(r'lavfi\.signalstats\.(\w+)=([\d.]+)')
 
-def grab(src, t, out, tag=0, seek=True):
+def grab(src, t, out, tag=0, seek=True, lift=0.0):
     """在 t 秒抽一帧 -> out.tmp<tag>.jpg，返回 (tmp, (yavg,ymin,ymax)) 或 None
 
     seek=False 用于静态图片输入：对单图加 -ss 会产出空文件但 rc 仍是 0（静默失败）。
+    lift>0 时先提亮再统计（暗壁纸提亮后卡片才看得清内容）。
     """
-    tmp = '%s.tmp%s.jpg' % (out, tag)
+    tmp = os.path.join(os.path.dirname(out), '_tmp',
+                       '%s.tmp%s.jpg' % (os.path.basename(out), tag))
+    os.makedirs(os.path.dirname(tmp), exist_ok=True)   # 中间帧放 _tmp/，别混进 thumbs/*.jpg 被插件当壁纸列出来
     if os.path.exists(tmp):
         try: os.remove(tmp)
         except Exception: pass
     args = [FF, '-y', '-v', 'info']
     if seek:
         args += ['-ss', str(t)]
-    args += ['-i', src, '-frames:v', '1', '-vf', 'scale=256:-2,signalstats,metadata=print',
-             '-q:v', '5', tmp]
+    vf = 'scale=256:-2,' + (('eq=brightness=%.3f:contrast=1.12,' % lift) if lift > 0 else '') + \
+         'signalstats,metadata=print'
+    args += ['-i', src, '-frames:v', '1', '-vf', vf, '-q:v', '5', tmp]
     txt, rc = _run(args)
     if not (os.path.exists(tmp) and os.path.getsize(tmp) > MINOK):
         if os.path.exists(tmp):
@@ -101,46 +105,67 @@ def points_for(dur, is_vid):
             seen.add(k); uniq.append(p)
     return uniq
 
-def make_one(src, out, is_vid):
-    """返回 (ok, info)"""
+def drop(b):
+    if b:
+        try: os.remove(b[1])
+        except Exception: pass
+
+def best_frame(src, out, is_vid, tagbase=0):
+    """在单个源上抽候选帧，返回其中最好的一帧 (key, tmp, st, t, dur)（不落地）"""
     dur = duration(src) if is_vid else 0.0
     best = None
-    cands = []
     for i, t in enumerate(points_for(dur, is_vid)):
-        r = grab(src, t, out, i, is_vid)
+        r = grab(src, t, out, tagbase + i, is_vid)
         if not r:
             continue
         tmp, st = r
-        cands.append(tmp)
         key = (1 if is_bad(st) else 0, -(st[2] - st[1]))
         if best is None or key < best[0]:
-            best = (key, (tmp, st), t)
-    if best is None:
-        # 兜底：时长探测失败 / 极短文件 → 从头再试一次
-        for i, t in enumerate([0.0, 0.5], 90):
-            r = grab(src, t, out, i, is_vid)
-            if r:
-                tmp9, st9 = r
-                cands.append(tmp9)
-                best = ((1 if is_bad(st9) else 0, -(st9[2] - st9[1])), r, t)
-                break
-    if best is None:
-        for f in cands:
-            try: os.remove(f)
+            drop(best)
+            best = (key, tmp, st, t, dur, src, is_vid)
+        else:
+            try: os.remove(tmp)
             except Exception: pass
+    return best
+
+def make_best(srcs, out):
+    """多个候选源（视频 / 图片 / Steam 封面）逐一试，取全局最好的一帧；拿到好帧就停。
+
+    ponytail: 最多试前 4 个候选源。图片源（透明 PNG 常见全黑）拿不到好帧时靠后面的
+    preview.jpg 兜底，不穷举目录里所有图。
+    """
+    best = None
+    for k, (src, is_vid) in enumerate(srcs[:4]):
+        b = best_frame(src, out, is_vid, k * 10)
+        if b and (best is None or b[0] < best[0]):
+            drop(best)
+            best = b
+        else:
+            drop(b)
+        if best and not best[0][0]:
+            break
+    if best is None:
         return False, 'no-frame'
-    tmp, st = best[1]
-    for f in cands:
-        if f != tmp:
-            try: os.remove(f)
+    key, tmp, st, t, dur, src, is_vid = best
+    # 源本身就暗（壁纸和 Steam 封面都暗）→ 提亮重出，否则卡片是一块黑
+    lifted = False
+    if is_bad(st) and st[0] < 28:
+        lift = min(0.22, (60.0 - st[0]) / 255.0)
+        r = grab(src, t, out, 97, is_vid, lift)
+        if r and not is_bad(r[1]):
+            try: os.remove(tmp)
+            except Exception: pass
+            tmp, st, lifted = r[0], r[1], True
+        elif r:
+            try: os.remove(r[0])
             except Exception: pass
     if os.path.exists(out):
         try: os.remove(out)
         except Exception: pass
     os.replace(tmp, out)
-    tag = 'BAD' if is_bad(st) else 'ok'
+    tag = ('BAD' if is_bad(st) else 'ok') + ('+lift' if lifted else '')
     return True, '%s t=%.1fs/%s yavg=%.0f range=%.0f' % (
-        tag, best[2], ('%.1fs' % dur) if dur else '-', st[0], st[2] - st[1])
+        tag, t, ('%.1fs' % dur) if dur else '-', st[0], st[2] - st[1])
 
 def main():
     limit = 0
@@ -180,27 +205,22 @@ def main():
             except Exception: sz = 0
             if e in VID: vids.append((sz, p))
             elif e in IMG: imgs.append((sz, p))
+        pv = os.path.join(d, 'preview.jpg')
         vids.sort(reverse=True); imgs.sort(reverse=True)
-        if vids:
-            src, is_vid = vids[0][1], True
-            # 超大视频（>400MB）seek 抽帧极慢且易超时 → 直接用 Steam 封面
-            if os.path.getsize(src) > 400 * 1024 * 1024:
-                pv = os.path.join(d, 'preview.jpg')
-                if os.path.isfile(pv):
-                    src, is_vid = pv, False
-        elif imgs:
-            src, is_vid = imgs[0][1], False
-        else:
+        srcs = []
+        for sz, p in vids[:1]:
+            if sz > 400 * 1024 * 1024:
+                continue          # 超大视频 seek 极慢/易超时 → 让封面兜底
+            srcs.append((p, True))
+        srcs += [(p, False) for sz, p in imgs if p != pv][:3]
+        if os.path.isfile(pv):
+            srcs.append((pv, False))
+        if not srcs and vids:
+            srcs = [(vids[0][1], True)]
+        if not srcs:
             fail += 1; print('  ✗ %s 无媒体文件' % wid); continue
         out = os.path.join(THUMBS, 'steam_%s.jpg' % wid)
-        ok, info = make_one(src, out, is_vid)
-        if not ok and is_vid:
-            # 大视频超时/编码抽不出帧 → 退回 Steam 自带封面（静态图，不走 seek）
-            pv = os.path.join(d, 'preview.jpg')
-            if os.path.isfile(pv):
-                ok2, info2 = make_one(pv, out, False)
-                if ok2:
-                    ok, info = ok2, 'cover ' + info2
+        ok, info = make_best(srcs, out)
         if ok:
             done += 1
             if info.startswith('BAD'):
