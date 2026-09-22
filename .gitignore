@@ -1,0 +1,18 @@
+# 本地备份链 / local backup chain —— 各人版本不同，不入库
+plugin.js.bak_*
+plugin.js.bak
+*.bak
+*.bak_*
+*.orig
+
+# 运行产物与日志 / runtime artifacts & logs
+*.log
+cache/
+scratch/
+we_out/
+*.png.tmp
+
+# 系统垃圾 / OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
