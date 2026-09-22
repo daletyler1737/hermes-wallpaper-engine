@@ -579,6 +579,11 @@ function buildWallpaperStyleEl() {
       object-fit: var(--wp-fit, cover) !important; object-position: center !important;
       filter: blur(var(--wp-blur, 4px)) brightness(var(--wp-brightness, 0.6)) contrast(var(--wp-contrast, 1)) saturate(var(--wp-saturate, 1));
     }
+    /* v50：视频/网页层不套 blur —— 每帧给全屏 4K 画面做高斯模糊是 mp4 卡顿的最大来源
+       （图片层留着：静态图只算一次）。要压暗用遮罩 --wp-dim，别用 blur。 */
+    video.wp-bg-layer, iframe.wp-bg-layer {
+      filter: brightness(var(--wp-brightness, 0.6)) contrast(var(--wp-contrast, 1)) saturate(var(--wp-saturate, 1)) !important;
+    }
     /* titlebar：恢复深色底——body * transparent 抹掉了它，
        导致原生关闭/最大化按钮（暖白 symbolColor）和 DOM 工具按钮在亮壁纸上不可见 */
     #root header {
@@ -1746,6 +1751,15 @@ function initStore(ctx) {
   console.error('[wallpaper][diag] boot build=' + WP_BUILD
     + ' folders=' + wpNormalizeFolders(stored.folders).length + '/' + wpActiveFolders(stored).length
     + ' source=' + wpFolderSourceState(stored) + ' enabled=' + !!stored.enabled)
+  // v50 活体证据：等卡片铺完后统计缩略图真实解码成功的张数（离线小图被宿主放行才算数）
+  setTimeout(() => {
+    try {
+      const im = Array.prototype.slice.call(document.querySelectorAll('img[data-wp-vthumb],img[data-wp-thumb]'))
+      const ok = im.filter((n) => n.naturalWidth > 0).length
+      console.error('[wallpaper][diag] thumbs loaded=' + ok + '/' + im.length
+        + ' base=' + (WP_THUMB_BASE ? 'set' : 'EMPTY') + ' cache=' + wpUrlCache.size + ' queue=' + wpUrlQueue.length)
+    } catch (e) {}
+  }, 9000)
   // 评审 D1（阻断级）：迁移采用旧键时**必须先落盘 v8 再删旧键**。
   // $cfg.listen 只在值「变化」时写（nanostores 的 listen 不像 subscribe 那样立即回调），
   // 而宿主 storage.remove 永不抛 —— 只删不写的话，用户装完不改任何设置就没有 v8 存档，
@@ -2045,7 +2059,9 @@ function wpRepointConfig(cfg, oldPath, newPath) {
 // 图源的唯一出处 = wpActiveFolders(cfg)：任何「有没有图源 / 扫哪些目录」的判断都必须走它，
 // 不许再读旧单文件夹字段（v≤35 的 folderPath，迁移后删除，wiring 门禁会数残留）。
 const WP_MAX_FOLDERS = 5
-const WP_BUILD = 'v49-static-thumbs'   // v48：卡片缩略图一律静态（不建 <video>）；v47 扫描结果常驻（内存+落盘）；v45 多 Steam 库全挂；场景壁纸渲染图走 we-scene 产物
+const WP_BUILD = 'v53-thumbs-late'
+
+// v48：卡片缩略图一律静态（不建 <video>）；v47 扫描结果常驻（内存+落盘）；v45 多 Steam 库全挂；场景壁纸渲染图走 we-scene 产物
 
 // 文件夹比较键：normPath（大小写/斜杠方向）+ 去掉尾部分隔符。
 // 评审发现：normPath 不归尾斜杠，`D:/bg` 与 `D:/bg/` 会被当成两本 → 同一目录扫两遍、
@@ -2288,7 +2304,6 @@ function wpTrimHistory(led, max) {
 }
 // #endregion instance-registry
 
-
 // v35：两个改名前缀的唯一字符串在纯逻辑区（有单测）；模块别名沿用旧名，
 // listImagesInFolder / excludeCurrentWallpaper 都不用改。
 const EXCLUDED_PREFIX = WP_EXCLUDED_PREFIX
@@ -2340,9 +2355,33 @@ function getRotatorState() {
 // ②GIF/WebP/自渲 *_anim.png 等动图只取静态首帧（串行抽帧、缩到 ≤192px 存 dataURL），卡片里绝不动。
 const WP_BLANK_PX = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
 const WP_ANIM_RE = /\.(gif|webp)$/i
-const wpStillCache = new Map()
-let wpStillQueue = []
-let wpStillBusy = false
+// v50：离线缩略图基址 = 插件自己的目录（<plugin>/thumbs/，由 scripts/wp_thumbs.py 生成）。
+// 为什么不写进 Steam 创意工坊目录：那是用户的库（只读语义），Steam 校验/更新会打架，
+// 卸载插件还会留一地垃圾。import.meta.url 直接指向本 plugin.js，非 file: 协议（打包场景）就降级。
+// 插件被宿主以 blob: URL 加载（import.meta.url = blob:file:///uuid）→ 相对路径解析不出来。
+// 宿主桥直接给了 desktopPluginsRoot()（实测 = <LOCALAPPDATA>/hermes/desktop-plugins）。
+// 顶层 await：插件本身是 ESM，宿主 import() 会等它；任一步失败就退化成空串（= v49 老行为）。
+let WP_THUMB_BASE = ''
+try {
+  const _root = String(await window.hermesDesktop.desktopPluginsRoot() || '')
+    .replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '')
+  if (_root) WP_THUMB_BASE = 'file:///' + _root + '/wallpaper/thumbs/'
+} catch (e) { WP_THUMB_BASE = '' }
+function wpSteamThumbUrl(p) {
+  if (!WP_THUMB_BASE) return ''
+  const m = String(p).replace(/\\/g, '/').match(/steamapps\/workshop\/content\/\d+\/(\d+)(?:\/|$)/i)
+  return m ? WP_THUMB_BASE + 'steam_' + m[1] + '.jpg' : ''
+}
+// 缩略图候选链（源路径，交给 wpThumbSrc 决定 URL）：离线小图 → Steam 自带封面 jpg → gif
+function wpThumbChain(p) {
+  const s = String(p)
+  const out = []
+  const tu = wpSteamThumbUrl(s)
+  if (tu) out.push(tu)
+  const cov = wpSteamCoverOf(s)
+  if (cov) out.push(cov, wpDirOf(s) + '/preview.gif')
+  return out
+}
 function wpSteamCoverOf(p) {
   const d = wpDirOf(String(p))
   return /\/steamapps\/workshop\/content\/\d+\/[^/]+$/i.test(d) ? d + '/preview.jpg' : ''
@@ -2351,53 +2390,68 @@ function wpIsAnimatedThumb(p) {
   const s = String(p)
   return WP_ANIM_RE.test(s) || /_anim\.png$/i.test(s)
 }
-function wpStillUrl(p) { return wpStillCache.get(String(p)) || '' }
-function wpMakeStill(p) {
-  p = String(p)
-  if (wpStillCache.has(p) || wpStillQueue.indexOf(p) >= 0) return
-  wpStillQueue.push(p)
-  if (!wpStillBusy) wpStillRun()
+// ── v52：本地图片走宿主桥 readFileDataUrl ──────────────────────────────
+// <img src="file://..."> 在 Hermes renderer 里被拒（v51 实测 101 张 0 张成功），
+// 而 <video src="file://..."> 正常 —— 所以缩略图这条链必须读成 data URL。
+// 图已经由 scripts/wp_thumbs.py 离线缩到 ≤512px（~19KB/张），101 张 ≈ 2MB，划得来；
+// 运行时零 canvas、零动图解码、零大图位图。
+const WP_URL_MAX = 400              // 缓存条数上限（自定义大目录别把内存吃满）
+const wpUrlCache = new Map()        // 绝对路径 → data URL | 'ERR' | 'PENDING'
+const wpUrlQueue = []
+let wpUrlBusy = false
+function wpAbsFromFileUrl(u) {
+  const s = String(u)
+  if (s.slice(0, 8) !== 'file:///') return ''
+  try { return decodeURIComponent(s.slice(8)) } catch (e) { return s.slice(8) }
 }
-// ponytail: 串行抽帧（一次一张）—— 并发解码几十张动图才是真卡顿来源；失败落哨兵，不重试
-function wpStillRun() {
-  const p = wpStillQueue.shift()
-  if (!p) { wpStillBusy = false; return }
-  wpStillBusy = true
-  const img = new Image()
-  img.onload = () => {
-    try {
-      const w = img.naturalWidth || 1
-      const h = img.naturalHeight || 1
-      const k = Math.min(1, 192 / Math.max(w, h))
-      const c = document.createElement('canvas')
-      c.width = Math.max(1, Math.round(w * k))
-      c.height = Math.max(1, Math.round(h * k))
-      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height)
-      wpStillCache.set(p, c.toDataURL('image/png'))
-      wpApplyStills()
-    } catch (e) { wpStillCache.set(p, WP_BLANK_PX) }
-    wpStillRun()
+// 缩略图源 → 绝对路径（DOM 上用来认领已渲染的占位 img）
+function wpThumbAbs(t) {
+  if (!t) return ''
+  const s = String(t)
+  return wpAbsFromFileUrl(/^file:\/\//i.test(s) ? s : pathToFileUrl(s))
+}
+function wpUrlPeek(abs) {
+  const c = wpUrlCache.get(abs)
+  return c && c !== 'ERR' && c !== 'PENDING' ? c : ''
+}
+// 串行取（一次一个 IPC）：几十张一起轰桥比抽帧还卡，v49 的教训。
+function wpUrlRun() {
+  if (wpUrlBusy) return
+  const abs = wpUrlQueue.shift()
+  if (!abs) return
+  wpUrlBusy = true
+  const hd = window.hermesDesktop
+  Promise.resolve(hd && hd.readFileDataUrl ? hd.readFileDataUrl(abs) : '')
+    .then((du) => { wpUrlCache.set(abs, du || 'ERR') })
+    .catch(() => { wpUrlCache.set(abs, 'ERR') })
+    .then(() => { wpUrlBusy = false; wpApplyThumbs(); wpUrlRun() })
+}
+// 同步入口：命中就给 data URL；没命中就登记排队并返回 ''（渲染层退成 1px 占位，绝不闪动图/不闪空白大图）
+function wpUrlSync(u) {
+  const abs = wpAbsFromFileUrl(u)
+  if (!abs) return String(u)
+  const c = wpUrlCache.get(abs)
+  if (c === undefined) {
+    if (wpUrlCache.size < WP_URL_MAX) {
+      wpUrlCache.set(abs, 'PENDING')
+      wpUrlQueue.push(abs)
+      wpUrlRun()
+    }
+    return ''
   }
-  img.onerror = () => { wpStillCache.set(p, WP_BLANK_PX); wpStillRun() }
-  img.src = pathToFileUrl(p)
+  return c === 'ERR' || c === 'PENDING' ? '' : c
 }
-function wpApplyStills() {
-  document.querySelectorAll('img[data-wp-still]').forEach((el) => {
-    const u = wpStillUrl(el.dataset.wpStill)
+// 图到位后直接换 src（不惊动 React：一屏几十张重渲染才是卡顿源，v49 同款做法）
+function wpApplyThumbs() {
+  document.querySelectorAll('img[data-wp-tabs]').forEach((el) => {
+    const u = wpUrlPeek(el.dataset.wpTabs)
     if (u && el.src !== u) el.src = u
   })
 }
-// 缩略图统一入口：Steam 条目取小封面；动图取静态首帧（未抽好先给 1px 透明占位，绝不闪动图）。
+// 缩略图统一入口：Steam 离线小图 → 同目录 preview.jpg → 原图；本地文件一律转 data URL。
 function wpThumbSrc(p) {
-  const t = wpSteamCoverOf(p) || p
-  if (!wpIsAnimatedThumb(t)) return pathToFileUrl(t)
-  const u = wpStillUrl(t)
-  if (!u) { wpMakeStill(t); return WP_BLANK_PX }
-  return u
-}
-function wpThumbStillKey(p) {
-  const t = wpSteamCoverOf(p) || p
-  return wpIsAnimatedThumb(t) ? t : ''
+  const t = wpSteamThumbUrl(p) || wpSteamCoverOf(p) || p
+  return wpUrlSync(pathToFileUrl(t)) || WP_BLANK_PX
 }
 
 const WP_PREVIEW_PICK = ['preview.jpg', 'preview.gif']
@@ -3857,16 +3911,16 @@ function WallpaperSettings() {
                         jsx('img', {
                           'data-wp-vthumb': p, loading: 'lazy', decoding: 'async', draggable: false,
                           style: { position: 'absolute', left: 0, top: 0, width: '100%', height: '100%', objectFit: 'cover' },
-                          src: wpThumbSrc(wpDirOf(p) + '/' + WP_PREVIEW_PICK[0]),
-                          'data-wp-still': wpIsAnimatedThumb(wpDirOf(p) + '/' + WP_PREVIEW_PICK[0]) ? (wpDirOf(p) + '/' + WP_PREVIEW_PICK[0]) : '',
+                          src: wpThumbSrc(wpThumbChain(p)[0] || ''),
+                          'data-wp-tabs': wpThumbAbs(wpThumbChain(p)[0] || ''),
                           onError: (e) => {
                             const el = e.currentTarget
+                            const list = wpThumbChain(p)
                             const i = Number(el.dataset.wpPrevI || '0') + 1
-                            if (i < WP_PREVIEW_PICK.length) {
+                            if (i < list.length) {
                               el.dataset.wpPrevI = String(i)
-                              const np = wpDirOf(p) + '/' + WP_PREVIEW_PICK[i]
-                              el.dataset.wpStill = wpIsAnimatedThumb(np) ? np : ''
-                              el.src = wpThumbSrc(np)
+                              el.dataset.wpTabs = wpThumbAbs(list[i])
+                              el.src = wpThumbSrc(list[i])
                             } else el.style.display = 'none'
                           }
                         })
@@ -3878,12 +3932,12 @@ function WallpaperSettings() {
                       loading: 'lazy', decoding: 'async', draggable: false,
                       className: 'w-full rounded object-cover', style: { height: '2.5rem' },
                       src: wpThumbSrc(p),
-                      'data-wp-still': wpThumbStillKey(p),
+                      'data-wp-tabs': wpThumbAbs(wpSteamThumbUrl(p) || wpSteamCoverOf(p) || p),
                       onError: (e) => {
                         const el = e.currentTarget
                         if (el.dataset.wpFb) { el.style.display = 'none'; return }
                         el.dataset.wpFb = '1'
-                        el.dataset.wpStill = wpIsAnimatedThumb(p) ? p : ''
+                        el.dataset.wpTabs = wpThumbAbs(wpSteamThumbUrl(p) || wpSteamCoverOf(p) || p)
                         el.src = wpThumbSrc(p)
                       }
                     }),

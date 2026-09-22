@@ -82,13 +82,15 @@ Folder scans happen once: the result is cached in memory and on disk (6h TTL). S
 
 ## 已知限制 / Known limitations
 
-* **`scene.pkg` 不原生渲染**：库里以 `preview.*` 封面回退显示（卡片和壁纸都是封面图）。完整的 Wallpaper Engine 场景需要 WebGL 播放器，见 Roadmap。
+* **`scene.pkg` 不原生渲染**：库里显示预生成的缩略图（`thumbs/steam_<ID>.jpg`），完整场景需要 WebGL 播放器，见 Roadmap。
 * **网页壁纸卡片缩略图只有 🌐 图标**：给每张 `.html` 挂一个 iframe 当缩略图的代价远大于收益。
 * `preview.*` 一律不进壁纸池；`.pkg` 本体一律不进壁纸池。
 * 壁纸文件夹上限 5 个（面板里校验）。
 * 视频壁纸默认静音（Chromium 自动播放策略），面板里可开声音；开启后需要先点一下界面才会出声。
 * 4K 视频壁纸会持续吃 GPU，笔记本注意。
 * 视频卡片只显示静态封面，**开面板不会为每张视频壁纸起解码器**（v48 起，缩略图不再用 `<video>` 取帧）。
+* 缩略图**全部由插件自己生成并存放**在插件目录的 `thumbs/`（`scripts/make_thumbs.py`：按视频时长比例抽 3 帧，自动避开近黑/纯白帧）。插件不读壁纸源目录的 `preview.*`，也**不往 431960 里写任何文件**。
+* 缩略图经宿主 `readFileDataUrl` 转成 data URL 后显示 —— 渲染层里 `<img src="file://...">` 会被直接拒绝（v52 起）。
 * HEVC/H.265 视频在 Chromium 里不解码 → 黑屏，请转成 H.264。
 
 ---
