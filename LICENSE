@@ -20,9 +20,4 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
----
-
-Scope note: this project is derived from KonjacW/hermes-wallpaper-plugin (v3),
-which declares no license upstream. This MIT grant therefore covers only the
-changes made in this repository; rights to the upstream original code remain
-with its author.
+（许可范围：本仓库的 MIT 授权只覆盖本仓库的改动；上游 KonjacW/hermes-wallpaper-plugin 未声明许可证，其原始代码权利归原作者 —— 详见 README「来源与许可 / Credits & License」。）
