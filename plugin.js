@@ -2045,7 +2045,7 @@ function wpRepointConfig(cfg, oldPath, newPath) {
 // 图源的唯一出处 = wpActiveFolders(cfg)：任何「有没有图源 / 扫哪些目录」的判断都必须走它，
 // 不许再读旧单文件夹字段（v≤35 的 folderPath，迁移后删除，wiring 门禁会数残留）。
 const WP_MAX_FOLDERS = 5
-const WP_BUILD = 'v47-persist-lib'   // v46：视频卡片用 #t=1 出真帧缩略图；多 Steam 库全挂；场景壁纸渲染图走 we-scene 产物
+const WP_BUILD = 'v48-static-thumb'   // v46：视频卡片用 #t=1 出真帧缩略图；多 Steam 库全挂；场景壁纸渲染图走 we-scene 产物
 
 // 文件夹比较键：normPath（大小写/斜杠方向）+ 去掉尾部分隔符。
 // 评审发现：normPath 不归尾斜杠，`D:/bg` 与 `D:/bg/` 会被当成两本 → 同一目录扫两遍、
@@ -2333,6 +2333,15 @@ function getRotatorState() {
 // 读取文件夹图片列表（每次切换前重扫 → 新增图片自动进池）
 // 注：参数名用 dirPath —— v36 起「旧单文件夹字段」必须在纯区迁移函数之外全文件清零
 // （接线门禁的负断言按整行扫文本，参数名也算残留；图源的唯一出处是 wpActiveFolders）。
+// v48：视频卡片的缩略图要「静态、省性能」—— 不再给每张视频卡建 <video>（十几路解码器常驻）。
+// 改挂壁纸目录自带的 preview 封面（jpg 优先、其次 gif，都是 <img> 原生解码）；都没有就留 🎬 图标。
+const WP_PREVIEW_PICK = ['preview.jpg', 'preview.gif']
+function wpDirOf(p) {
+  const s = String(p).replace(/\\/g, '/')
+  const i = s.lastIndexOf('/')
+  return i > 0 ? s.slice(0, i) : s
+}
+
 // v41：本层媒体文件筛选 —— 不吃子目录、不吃 _excluded_ 前缀、不吃创意工坊 preview 封面。
 function wpPickMediaFiles(entries) {
   return (Array.isArray(entries) ? entries : [])
@@ -3774,12 +3783,24 @@ function WallpaperSettings() {
                   isWebPath(p)
                     ? jsx('div', { className: 'flex w-full items-center justify-center rounded bg-black/40', style: { height: '2.5rem', fontSize: '0.875rem' }, children: '🌐' })
                     : isVideoPath(p)
-                    // v46：视频卡片不再只挂 🎬 —— 用原生 `#t=1` 媒体片段让 <video> 静音 seek 到第 1 秒，
-                    // 当缩略图显示真画面（零依赖；preload=metadata 只读头，不整段解码）。
-                    ? jsx('video', {
-                      src: pathToFileUrl(p) + '#t=1',
-                      muted: true, preload: 'metadata', playsInline: true, draggable: false,
-                      className: 'w-full rounded bg-black/40 object-cover', style: { height: '2.5rem' }
+                    // v48：缩略图一律静态、省内存 —— 不再给视频卡建 <video>（那会常驻解码器）。
+                    // 改挂同目录 preview 封面（jpg → gif 逐级回退，都是 <img> 原生解码），都没有就露 🎬。
+                    ? jsxs('div', {
+                      style: { position: 'relative', width: '100%', height: '2.5rem', overflow: 'hidden', borderRadius: '0.25rem', background: 'rgba(0,0,0,0.4)' },
+                      children: [
+                        jsx('div', { style: { position: 'absolute', left: 0, top: 0, width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.875rem' }, children: '🎬' }),
+                        jsx('img', {
+                          'data-wp-vthumb': p, loading: 'lazy', draggable: false,
+                          style: { position: 'absolute', left: 0, top: 0, width: '100%', height: '100%', objectFit: 'cover' },
+                          src: pathToFileUrl(wpDirOf(p) + '/' + WP_PREVIEW_PICK[0]),
+                          onError: (e) => {
+                            const el = e.currentTarget
+                            const i = Number(el.dataset.wpPrevI || '0') + 1
+                            if (i < WP_PREVIEW_PICK.length) { el.dataset.wpPrevI = String(i); el.src = pathToFileUrl(wpDirOf(p) + '/' + WP_PREVIEW_PICK[i]) }
+                            else el.style.display = 'none'
+                          }
+                        })
+                      ]
                     })
                     : jsx('img', { src: pathToFileUrl(p), loading: 'lazy', draggable: false, className: 'w-full rounded object-cover', style: { height: '2.5rem' } }),
                   jsx('span', { className: 'truncate text-(--ui-text-tertiary)', style: { fontSize: '9px' }, children: wpNameOf(p) }),
